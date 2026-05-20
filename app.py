@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import io
+import zipfile
 
-# Affichage en pleine largeur pour avoir un grand tableau
-st.set_page_config(page_title="Détails des Restaurants", layout="wide")
+# Configuration de la page
+st.set_page_config(page_title="Dashboard Restaurants", layout="wide")
 
-# CSS pour agrandir la police du tableau
+# Agrandir l'affichage du tableau
 st.markdown("""
     <style>
     .stDataFrame div {
@@ -19,79 +20,80 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🍽️ Détails des Créations de Restaurants (12 Derniers Mois)")
+st.title("📊 Tableau de bord : Restaurants onboardés")
 
 @st.cache_data
-def load_and_process_data(file):
-    # 1. Lecture du fichier
+def process_data(file):
     df = pd.read_csv(file, sep=';')
     
-    # 2. Nettoyage : Exclure STRICTEMENT les "test"
+    # 1. Élimination des restaurants "test"
     df = df.dropna(subset=['Restaurant Name'])
     df = df[~df['Restaurant Name'].str.lower().str.contains('test', na=False)]
     
-    # 3. Traitement des dates pour le tri
+    # 2. Formatage des dates
     df['Created At'] = pd.to_datetime(df['Created At'], format='%d/%m/%Y', errors='coerce')
     df = df.dropna(subset=['Created At'])
     
-    # 4. Trier de la création la plus récente à la plus ancienne
-    df = df.sort_values(by='Created At', ascending=False)
+    # Création de la colonne Mois pour le groupement
+    df['Mois'] = df['Created At'].dt.to_period('M').astype(str)
     
-    # Création temporaire d'une colonne "Mois" juste pour isoler les 12 derniers mois
-    df['Mois_temp'] = df['Created At'].dt.to_period('M').astype(str)
-    mois_uniques = df['Mois_temp'].unique()
+    # 3. Calcul des chiffres par mois (pour le tableau d'affichage)
+    df_chiffres = df.groupby('Mois').size().reset_index(name='Nombre de créations')
+    df_chiffres = df_chiffres.sort_values(by='Mois', ascending=False).reset_index(drop=True)
     
-    # CORRECTION ICI : le nom de la variable ne commence plus par un chiffre
-    derniers_12_mois = mois_uniques[:12] 
+    # Remettre la date au format lisible pour l'export Excel
+    df['Created At'] = df['Created At'].dt.strftime('%d/%m/%Y')
     
-    # Garder uniquement le détail des restaurants de ces 12 mois
-    df_details = df[df['Mois_temp'].isin(derniers_12_mois)].copy()
-    
-    # Supprimer la colonne temporaire pour avoir un fichier propre
-    df_details = df_details.drop(columns=['Mois_temp'])
-    
-    # Remettre la date au format lisible JJ/MM/AAAA pour l'affichage et l'export
-    df_details['Created At'] = df_details['Created At'].dt.strftime('%d/%m/%Y')
-    
-    return df_details
+    return df, df_chiffres
 
-# Zone d'upload du fichier
-fichier_upload = st.file_uploader("1. Chargez votre fichier CSV", type=['csv'])
+# Zone d'upload
+fichier_upload = st.file_uploader("Chargez votre fichier CSV ici", type=['csv'])
 
 if fichier_upload is not None:
     try:
-        # Récupération de la liste détaillée
-        df_details = load_and_process_data(fichier_upload)
+        df_complet, df_chiffres = process_data(fichier_upload)
         
-        st.success(f"Fichier chargé ! Les données 'test' ont été retirées.")
+        st.success("✅ Fichier traité avec succès (les restaurants 'test' ont été exclus).")
         
-        # --- AFFICHAGE DE LA LISTE DÉTAILLÉE (PLUS GRAND) ---
-        st.markdown('<p class="grand-titre">📋 Liste détaillée des restaurants :</p>', unsafe_allow_html=True)
-        
-        # On affiche le détail complet dans un grand tableau
-        colonnes_a_afficher = ['Id', 'Restaurant Name', 'Main City', 'Address', 'phone', 'Created At']
-        st.dataframe(df_details[colonnes_a_afficher], use_container_width=True, height=500)
+        # --- PARTIE 1 : AFFICHAGE DES CHIFFRES PAR MOIS ---
+        st.markdown('<p class="grand-titre">📈 Nombre de restaurants par mois :</p>', unsafe_allow_html=True)
+        # Affichage du grand tableau des comptes
+        st.dataframe(df_chiffres, use_container_width=True, height=400)
         
         st.divider()
         
-        # --- EXPORTATION EXCEL DES DÉTAILS ---
-        st.markdown('<p class="grand-titre">📥 Exporter le détail complet :</p>', unsafe_allow_html=True)
+        # --- PARTIE 2 : GÉNÉRATION DU FICHIER ZIP ---
+        st.markdown('<p class="grand-titre">📥 Exporter le détail complet (Fichier ZIP) :</p>', unsafe_allow_html=True)
+        st.write("Cliquez sur le bouton ci-dessous pour télécharger une archive ZIP contenant un fichier Excel par mois avec le détail de chaque restaurant signé.")
         
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            # On exporte toutes les colonnes du détail dans une seule feuille Excel
-            df_details.to_excel(writer, index=False, sheet_name="Détails Restaurants")
+        # Création de l'archive ZIP en mémoire
+        zip_buffer = io.BytesIO()
         
-        # Le bouton pour télécharger uniquement les détails
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            # On boucle sur chaque mois
+            for mois, groupe in df_complet.groupby('Mois'):
+                # On retire la colonne technique 'Mois' avant l'export
+                groupe_export = groupe.drop(columns=['Mois'], errors='ignore')
+                
+                # Création du fichier Excel du mois en mémoire
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    groupe_export.to_excel(writer, index=False, sheet_name=str(mois))
+                
+                # Ajout de ce fichier Excel dans le dossier ZIP
+                nom_fichier_excel = f"details_restaurants_{mois}.xlsx"
+                zip_file.writestr(nom_fichier_excel, excel_buffer.getvalue())
+        
+        # Bouton pour télécharger le ZIP
         st.download_button(
-            label="🚀 Télécharger les détails (Fichier Excel)",
-            data=buffer.getvalue(),
-            file_name="details_restaurants_12_mois.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            label="🚀 Télécharger le ZIP par mois",
+            data=zip_buffer.getvalue(),
+            file_name="details_restaurants_mensuels.zip",
+            mime="application/zip",
             type="primary"
         )
-        
+
     except Exception as e:
-        st.error(f"Une erreur est survenue : {e}")
+        st.error(f"Une erreur est survenue lors de la lecture du fichier : {e}")
 else:
-    st.info("Veuillez charger le fichier CSV pour afficher la liste.")
+    st.info("Veuillez charger le fichier CSV pour commencer.")
