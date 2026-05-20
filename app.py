@@ -1,64 +1,61 @@
 import streamlit as st
 import pandas as pd
 import io
+import zipfile
 
-st.set_page_config(page_title="Filtre & Export Restaurants", layout="wide")
-st.title("Filtre & Exportation Excel par Mois")
+st.set_page_config(page_title="Export Excel par Mois", layout="wide")
+st.title("Générateur de fichiers Excel par Mois")
 
 @st.cache_data
 def load_data(file):
     df = pd.read_csv(file, sep=';')
+    # Conversion de la date au format Jour/Mois/Année
     df['Created At'] = pd.to_datetime(df['Created At'], format='%d/%m/%Y', errors='coerce')
-    df['Mois de Création'] = df['Created At'].dt.to_period('M')
+    df = df.dropna(subset=['Created At'])
+    # Création d'une colonne simplifiée 'AAAA-MM' pour le regroupement
+    df['Mois_Creation'] = df['Created At'].dt.to_period('M').astype(str)
     return df
 
-fichier_upload = st.file_uploader("Choisissez votre fichier de restaurants (format CSV)", type=['csv'])
+# Zone d'upload du fichier
+fichier_upload = st.file_uploader("1. Glissez-déposez votre fichier CSV ici", type=['csv'])
 
 if fichier_upload is not None:
     try:
         df = load_data(fichier_upload)
+        st.success(f"Fichier chargé avec succès ! {len(df)} restaurants trouvés.")
         
-        if df['Mois de Création'].notna().any():
-            mois_disponibles = sorted(df['Mois de Création'].dropna().unique(), reverse=True)
-            mois_str = [str(m) for m in mois_disponibles]
-            
-            st.divider()
-            
-            # Sélection du mois
-            mois_selectionne_str = st.selectbox("Sélectionnez le mois de création :", ['Tous'] + mois_str)
-            
-            if mois_selectionne_str == 'Tous':
-                df_filtre = df
-                nom_fichier_export = "tous_les_restaurants.xlsx"
-            else:
-                df_filtre = df[df['Mois de Création'].astype(str) == mois_selectionne_str]
-                nom_fichier_export = f"restaurants_{mois_selectionne_str}.xlsx"
-            
-            # --- BLOC EXPORT EXCEL ---
-            # Préparation du fichier Excel en mémoire tampon (Buffer)
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                # On enlève la colonne technique avant d'exporter
-                df_exportable = df_filtre.drop(columns=['Mois de Création'], errors='ignore')
-                df_exportable.to_excel(writer, index=False, sheet_name="Restaurants")
-            
-            # Bouton de téléchargement Streamlit
-            st.download_button(
-                label=f"📥 Télécharger la sélection en Excel (.xlsx)",
-                data=buffer.getvalue(),
-                file_name=nom_fichier_export,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            # --------------------------
-            
-            st.success(f"{len(df_filtre)} résultats trouvés.")
-            
-            colonnes_a_afficher = ['Id', 'Restaurant Name', 'Main City', 'Sub City', 'Created At', 'Status']
-            st.dataframe(df_filtre[colonnes_a_afficher], use_container_width=True)
-            
-        else:
-            st.warning("Aucune date valide trouvée.")
+        st.subheader("2. Générer les exports")
+        st.write("Cliquez sur le bouton ci-dessous pour générer un fichier ZIP contenant un fichier Excel (.xlsx) pour chaque mois.")
+
+        # --- LOGIQUE DU BOUTON DE GÉNÉRATION COMPLET ---
+        # On prépare le fichier ZIP en mémoire (sans écrire sur le disque)
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            # On groupe les restaurants par mois
+            for mois, groupe in df.groupby('Mois_Creation'):
+                # On nettoie la colonne technique avant l'export
+                groupe_propre = groupe.drop(columns=['Mois_Creation'], errors='ignore')
+                
+                # Création du fichier Excel pour ce mois spécifique
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    groupe_propre.to_excel(writer, index=False, sheet_name=str(mois))
+                
+                # Ajout du fichier Excel dans le ZIP
+                nom_fichier_excel = f"restaurants_{mois}.xlsx"
+                zip_file.writestr(nom_fichier_excel, excel_buffer.getvalue())
+        
+        # Le bouton magique Streamlit
+        st.download_button(
+            label="⚙️ Générer et Télécharger le ZIP de tous les mois",
+            data=zip_buffer.getvalue(),
+            file_name="exports_restaurants_par_mois.zip",
+            mime="application/zip",
+            type="primary" # Met le bouton en couleur (bleu/rouge selon votre thème)
+        )
+        
     except Exception as e:
-        st.error(f"Erreur : {e}")
+        st.error(f"Une erreur est survenue : {e}")
 else:
-    st.info("Veuillez uploader un fichier CSV pour commencer.")
+    st.info("Veuillez d'abord uploader votre fichier CSV pour faire apparaître le bouton de génération.")
