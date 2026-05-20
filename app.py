@@ -40,10 +40,12 @@ def load_and_process_data(file):
     # Création temporaire d'une colonne "Mois" juste pour isoler les 12 derniers mois
     df['Mois_temp'] = df['Created At'].dt.to_period('M').astype(str)
     mois_uniques = df['Mois_temp'].unique()
-    12_derniers_mois = mois_uniques[:12] # On prend les 12 mois les plus récents
+    
+    # CORRECTION ICI : le nom de la variable ne commence plus par un chiffre
+    derniers_12_mois = mois_uniques[:12] 
     
     # Garder uniquement le détail des restaurants de ces 12 mois
-    df_details = df[df['Mois_temp'].isin(12_derniers_mois)].copy()
+    df_details = df[df['Mois_temp'].isin(derniers_12_mois)].copy()
     
     # Supprimer la colonne temporaire pour avoir un fichier propre
     df_details = df_details.drop(columns=['Mois_temp'])
@@ -66,7 +68,7 @@ if fichier_upload is not None:
         # --- AFFICHAGE DE LA LISTE DÉTAILLÉE (PLUS GRAND) ---
         st.markdown('<p class="grand-titre">📋 Liste détaillée des restaurants :</p>', unsafe_allow_html=True)
         
-        # On affiche le détail complet dans un grand tableau (vous pouvez ajouter d'autres colonnes si besoin)
+        # On affiche le détail complet dans un grand tableau
         colonnes_a_afficher = ['Id', 'Restaurant Name', 'Main City', 'Address', 'phone', 'Created At']
         st.dataframe(df_details[colonnes_a_afficher], use_container_width=True, height=500)
         
