@@ -1,56 +1,98 @@
 import streamlit as st
 import pandas as pd
+import io
 
-st.set_page_config(page_title="Créations par mois", layout="centered")
-st.title("📊 Nombre de restaurants créés par mois")
+# Configuration de la page en mode LARGE pour agrandir l'affichage
+st.set_page_config(page_title="Rapport 12 Mois", layout="wide")
+
+# CSS personnalisé pour agrandir la police du tableau et des textes
+st.markdown("""
+    <style>
+    /* Agrandir la police globale des tableaux Streamlit */
+    .stDataFrame div {
+        font-size: 16pt !important;
+    }
+    /* Style pour les sous-titres */
+    .grand-titre {
+        font-size: 20pt !important;
+        font-weight: bold;
+        color: #1E3A8A;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("📊 Analyse des Créations de Restaurants (12 Derniers Mois)")
 
 @st.cache_data
 def load_and_process_data(file):
-    # 1. Charger les données
+    # 1. Lecture du fichier
     df = pd.read_csv(file, sep=';')
     
-    # 2. Exclure les restaurants de test
-    # On s'assure d'abord qu'il n'y a pas de valeurs vides dans la colonne 'Restaurant Name'
-    # Ensuite on filtre pour exclure les lignes contenant le mot "test" (insensible à la casse)
+    # 2. Nettoyage : Exclure STRICTEMENT les lignes contenant "test" (insensible à la casse)
     df = df.dropna(subset=['Restaurant Name'])
     df = df[~df['Restaurant Name'].str.lower().str.contains('test', na=False)]
     
-    # 3. Traiter les dates
+    # 3. Traitement des dates
     df['Created At'] = pd.to_datetime(df['Created At'], format='%d/%m/%Y', errors='coerce')
     df = df.dropna(subset=['Created At'])
     
-    # Créer une colonne avec le mois et l'année (Format: AAAA-MM)
+    # Créer la colonne Année-Mois
     df['Mois de Création'] = df['Created At'].dt.to_period('M').astype(str)
     
-    # 4. Compter le nombre de créations par mois
-    # On groupe par 'Mois de Création' et on compte le nombre de lignes (size)
-    df_compte = df.groupby('Mois de Création').size().reset_index(name='Nombre de créations')
+    # 4. Calcul du résumé par mois
+    df_summary = df.groupby('Mois de Création').size().reset_index(name='Nombre de créations')
     
-    # Trier du mois le plus récent au plus ancien
-    df_compte = df_compte.sort_values(by='Mois de Création', ascending=False).reset_index(drop=True)
+    # Trier du plus récent au plus ancien
+    df_summary = df_summary.sort_values(by='Mois de Création', ascending=False).reset_index(drop=True)
     
-    return df_compte, df
+    # 5. Sélectionner uniquement les 12 derniers mois de data disponibles
+    df_12_mois = df_summary.head(12)
+    
+    return df_12_mois, df
 
 # Zone d'upload du fichier
-fichier_upload = st.file_uploader("Veuillez uploader votre fichier CSV", type=['csv'])
+fichier_upload = st.file_uploader("1. Glissez-déposez votre fichier CSV ici", type=['csv'])
 
 if fichier_upload is not None:
     try:
-        # Appel de la fonction de traitement
-        df_compte, df_complet = load_and_process_data(fichier_upload)
+        # Traitement des données
+        df_12_mois, df_complet = load_and_process_data(fichier_upload)
         
-        st.success("Fichier traité avec succès ! (Les restaurants 'test' ont été ignorés)")
+        st.success("Fichier chargé ! Les restaurants de 'test' ont été automatiquement retirés.")
         
-        st.subheader("Récapitulatif des créations mensuelles")
+        # --- SECTION AFFICHAGE DU TABLEAU AGRANDI ---
+        st.markdown('<p class="grand-titre">📈 Tableau récapitulatif des 12 derniers mois :</p>', unsafe_allow_html=True)
         
-        # Affichage du tableau (st.dataframe ou st.table)
-        st.dataframe(df_compte, use_container_width=True)
+        # Affichage du tableau (il prend toute la largeur et l'écriture est agrandie via le CSS)
+        st.dataframe(df_12_mois, use_container_width=True, height=460)
         
-        # Optionnel : Afficher le total global
-        total_restaurants = df_compte['Nombre de créations'].sum()
-        st.info(f"**Total global des restaurants créés (hors tests) :** {total_restaurants}")
+        st.divider()
+        
+        # --- SECTION EXPORTATION EXCEL ---
+        st.markdown('<p class="grand-titre">📥 Exportation des données :</p>', unsafe_allow_html=True)
+        
+        # Filtrer le gros fichier pour ne garder que le détail des restaurants appartenant à ces 12 mois
+        liste_12_mois = df_12_mois['Mois de Création'].tolist()
+        df_details_12_mois = df_complet[df_complet['Mois de Création'].isin(liste_12_mois)].copy()
+        # Supprimer la colonne technique avant l'export
+        df_details_12_mois = df_details_12_mois.drop(columns=['Mois de Création'], errors='ignore')
+        
+        # Création du fichier Excel avec 2 onglets (Résumé + Détails)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_12_mois.to_excel(writer, index=False, sheet_name="Résumé 12 Mois")
+            df_details_12_mois.to_excel(writer, index=False, sheet_name="Détails des Restaurants")
+        
+        # Bouton de téléchargement
+        st.download_button(
+            label="🚀 Télécharger le rapport Excel (.xlsx)",
+            data=buffer.getvalue(),
+            file_name="rapport_creations_12_mois.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
         
     except Exception as e:
-        st.error(f"Une erreur est survenue lors de la lecture du fichier : {e}")
+        st.error(f"Une erreur est survenue : {e}")
 else:
-    st.info("En attente du fichier CSV...")
+    st.info("Veuillez charger le fichier CSV pour afficher le tableau et le bouton de téléchargement.")
