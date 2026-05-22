@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 2. FONCTIONS DE CHARGEMENT & NETTOYAGE (CACHE) ---
+# --- 2. FONCTIONS DE CHARGEMENT & NETTOYAGE ---
 @st.cache_data
 def load_data(file):
     df = pd.read_csv(file, low_memory=False)
@@ -37,20 +37,28 @@ def load_data(file):
 
     return df
 
-@st.cache_data
+# Note: Pas de cache ici pour éviter le bug du pointeur de fichier vide sur Streamlit
 def load_pipelines(files):
     pipelines = []
     for f in files:
-        temp = pd.read_csv(f)
-        # Extraction du nom de l'AM depuis le nom du fichier (ex: "... - Najwa.csv" -> "Najwa")
-        am_name = f.name.split('-')[-1].replace('.csv', '').replace('.xlsx', '').strip()
-        if 'Id' in temp.columns:
-            temp['AM'] = am_name.capitalize()
-            pipelines.append(temp[['Id', 'AM']])
+        f.seek(0) # Sécurité : Remet le curseur de lecture du fichier à zéro
+        try:
+            temp = pd.read_csv(f)
+            # Nettoyage des noms de colonnes (enlève les espaces invisibles et met en minuscules)
+            temp.columns = temp.columns.str.strip().str.lower()
+            
+            # Vérification sécurisée
+            if 'id' in temp.columns:
+                am_name = f.name.split('-')[-1].replace('.csv', '').replace('.xlsx', '').strip()
+                temp['AM'] = am_name.capitalize()
+                temp['Id'] = temp['id'].astype(str) # Uniformisation en texte
+                pipelines.append(temp[['Id', 'AM']])
+        except Exception as e:
+            continue
     
     if pipelines:
-        # On fusionne tous les pipelines et on retire les doublons éventuels d'ID Restaurant
-        return pd.concat(pipelines, ignore_index=True).drop_duplicates(subset=['Id'])
+        df_p = pd.concat(pipelines, ignore_index=True).drop_duplicates(subset=['Id'])
+        return df_p
     return pd.DataFrame()
 
 
@@ -64,7 +72,7 @@ def wow_delta(cw_val, pw_val):
 with st.sidebar:
     st.title("⚙️ Configuration")
     
-    st.subheader("1️⃣ Données Commandes (Export Admin)")
+    st.subheader("1️⃣ Données Commandes (Export)")
     uploaded_file = st.file_uploader("Export CSV", type=['csv'], label_visibility="collapsed")
     
     st.subheader("2️⃣ Base Account Managers")
@@ -78,9 +86,20 @@ if uploaded_file is None:
     st.title("Bienvenue sur votre Dashboard de Business Intelligence 👋")
     st.info("👈 Veuillez uploader l'export des commandes dans la barre latérale pour commencer.")
 else:
-    # Chargement Data Globale
+    # 1. Chargement de la Data Globale
     df_global = load_data(uploaded_file)
+    
+    # 2. Chargement des Pipelines AM
     pipe_df = load_pipelines(pipeline_files) if pipeline_files else pd.DataFrame()
+    
+    # 3. FUSION GLOBALE SECURISÉE (Avant filtrage des dates)
+    if not pipe_df.empty:
+        df_global['Restaurant ID'] = df_global['Restaurant ID'].astype(str).str.strip()
+        df_global = df_global.merge(pipe_df, left_on='Restaurant ID', right_on='Id', how='left')
+        df_global['AM'] = df_global['AM'].fillna('Non Assigné')
+    else:
+        df_global['AM'] = 'Non Assigné'
+
     
     # --- FILTRE DE DATE (SIDEBAR) ---
     st.sidebar.subheader("📅 Période d'analyse")
@@ -99,7 +118,7 @@ else:
     else:
         start_date = end_date = selected_dates[0]
 
-    # --- FILTRAGE DES DONNÉES (Actuel vs Précédent) ---
+    # --- FILTRAGE DES DONNÉES TEMPORELLES ---
     cw_df = df_global[(df_global['_date'].dt.date >= start_date) & (df_global['_date'].dt.date <= end_date)].copy()
     
     delta_days = (end_date - start_date).days + 1
@@ -107,14 +126,6 @@ else:
     pw_start_date = pw_end_date - datetime.timedelta(days=delta_days - 1)
     
     pw_df = df_global[(df_global['_date'].dt.date >= pw_start_date) & (df_global['_date'].dt.date <= pw_end_date)].copy()
-
-    # --- INTEGRATION DES AMs (Si les pipelines sont uploadés) ---
-    if not pipe_df.empty:
-        cw_df = cw_df.merge(pipe_df, left_on='Restaurant ID', right_on='Id', how='left')
-        cw_df['AM'] = cw_df['AM'].fillna('Non Assigné')
-    else:
-        cw_df['AM'] = 'Non Assigné'
-
 
     # --- EN-TÊTE PRINCIPAL ---
     st.title("📊 Dashboard Yassir : 360° Operations & Strategy")
@@ -295,19 +306,19 @@ else:
                 groupby_col = 'restaurant name'
 
             if not am_df.empty:
-                # --- CALCUL DES KPIs AM ---
+                # --- CALCUL DES KPIs AM (Avec sécurité division par zéro) ---
                 am_df['is_auto'] = am_df['Accepted By'].astype(str).str.lower().str.strip() == 'restaurant'
                 am_df['is_delivered'] = am_df['status'] == 'Delivered'
                 am_df['is_cancelled'] = am_df['status'] == 'Cancelled'
 
                 total_req = len(am_df)
                 am_gmv = am_df['item total'].sum()
-                am_aov = am_gmv / total_req
-                succ_rate = am_df['is_delivered'].sum() / total_req * 100
-                canc_rate = am_df['is_cancelled'].sum() / total_req * 100
-                auto_rate = am_df['is_auto'].sum() / total_req * 100
+                am_aov = am_gmv / total_req if total_req > 0 else 0
+                succ_rate = (am_df['is_delivered'].sum() / total_req * 100) if total_req > 0 else 0
+                canc_rate = (am_df['is_cancelled'].sum() / total_req * 100) if total_req > 0 else 0
+                auto_rate = (am_df['is_auto'].sum() / total_req * 100) if total_req > 0 else 0
 
-                # Affichage des KPIs globaux de la sélection
+                # Affichage des KPIs globaux
                 st.markdown(f"### 📈 Performance : {selected_am}")
                 ca1, ca2, ca3, ca4, ca5 = st.columns(5)
                 ca1.metric("💰 GMV", f"{am_gmv:,.0f} MAD")
@@ -328,10 +339,10 @@ else:
                     Automated=('is_auto', 'sum')
                 ).reset_index()
                 
-                am_table['AOV (MAD)'] = (am_table['GMV'] / am_table['Requests']).round(1)
-                am_table['Success Rate (%)'] = (am_table['Delivered'] / am_table['Requests'] * 100).round(1)
-                am_table['Cancel Rate (%)'] = (am_table['Cancelled'] / am_table['Requests'] * 100).round(1)
-                am_table['Automatisation (%)'] = (am_table['Automated'] / am_table['Requests'] * 100).round(1)
+                am_table['AOV (MAD)'] = (am_table['GMV'] / am_table['Requests']).fillna(0).round(1)
+                am_table['Success Rate (%)'] = (am_table['Delivered'] / am_table['Requests'] * 100).fillna(0).round(1)
+                am_table['Cancel Rate (%)'] = (am_table['Cancelled'] / am_table['Requests'] * 100).fillna(0).round(1)
+                am_table['Automatisation (%)'] = (am_table['Automated'] / am_table['Requests'] * 100).fillna(0).round(1)
                 am_table['GMV'] = am_table['GMV'].round(0)
                 
                 cols_to_show = [groupby_col, 'Requests', 'GMV', 'AOV (MAD)', 'Success Rate (%)', 'Cancel Rate (%)', 'Automatisation (%)']
@@ -359,10 +370,11 @@ else:
                     Automated=('is_auto', 'sum')
                 ).reset_index()
                 
-                time_df['AOV'] = time_df['GMV'] / time_df['Requests']
-                time_df['Success Rate'] = time_df['Delivered'] / time_df['Requests'] * 100
-                time_df['Cancel Rate'] = time_df['Cancelled'] / time_df['Requests'] * 100
-                time_df['Automatisation'] = time_df['Automated'] / time_df['Requests'] * 100
+                # Remplissage par 0 des erreurs de division
+                time_df['AOV'] = (time_df['GMV'] / time_df['Requests']).fillna(0)
+                time_df['Success Rate'] = (time_df['Delivered'] / time_df['Requests'] * 100).fillna(0)
+                time_df['Cancel Rate'] = (time_df['Cancelled'] / time_df['Requests'] * 100).fillna(0)
+                time_df['Automatisation'] = (time_df['Automated'] / time_df['Requests'] * 100).fillna(0)
 
                 # Tracé des graphiques temporels
                 col_t1, col_t2 = st.columns(2)
